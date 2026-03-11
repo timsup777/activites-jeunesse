@@ -7,8 +7,7 @@ const fs = require('fs');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-require('./db');
-
+const { initDb } = require('./db');
 const { router: authRouter, SECRET } = require('./routes/auth');
 const { router: usersRouter } = require('./routes/users');
 const eventsRouter = require('./routes/events');
@@ -17,6 +16,7 @@ const registrationsRouter = require('./routes/registrations');
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
 const uploadsDir = process.env.UPLOADS_PATH || path.join(__dirname, 'uploads');
 app.use('/uploads', express.static(uploadsDir));
 
@@ -32,6 +32,12 @@ function requireAuth(req, res, next) {
   }
 }
 
+// Init DB (une seule fois au démarrage)
+const dbReady = initDb();
+app.use((req, res, next) => {
+  dbReady.then(next).catch(err => res.status(500).json({ error: 'Erreur base de données: ' + err.message }));
+});
+
 // Routes publiques
 app.use('/api/auth', authRouter);
 app.use('/api/users', usersRouter);
@@ -39,7 +45,7 @@ app.use('/api/users', usersRouter);
 // Événements publics (GET seulement)
 app.get('/api/events', eventsRouter);
 
-// Inscriptions (nécessite compte utilisateur — géré dans le router)
+// Inscriptions
 app.use('/api/registrations', registrationsRouter);
 
 // Événements admin (toutes les opérations)
@@ -48,7 +54,7 @@ app.use('/api/events', (req, res, next) => {
   requireAuth(req, res, next);
 }, eventsRouter);
 
-// Gestion inscriptions admin
+// Admin
 app.use('/api/admin/registrations', requireAuth, registrationsRouter);
 app.get('/api/admin/stats', requireAuth, (req, res) => {
   req.url = '/stats';
@@ -64,9 +70,16 @@ if (fs.existsSync(frontendDist)) {
   });
 }
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`\nServeur démarré sur http://0.0.0.0:${PORT}`);
-  console.log(`  Accès local : http://localhost:${PORT}`);
-  console.log(`  Admin       : http://localhost:${PORT}/admin`);
-  console.log(`  Identifiants: admin / activites2024\n`);
-});
+// Démarrage local
+if (require.main === module) {
+  dbReady.then(() => {
+    app.listen(PORT, '0.0.0.0', () => {
+      console.log(`\nServeur démarré sur http://0.0.0.0:${PORT}`);
+      console.log(`  Accès local : http://localhost:${PORT}`);
+      console.log(`  Admin       : http://localhost:${PORT}/admin`);
+      console.log(`  Identifiants: admin / activites2024\n`);
+    });
+  }).catch(err => { console.error('Erreur:', err); process.exit(1); });
+}
+
+module.exports = app;

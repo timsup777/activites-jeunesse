@@ -2,14 +2,11 @@
   "name": "activites-jeunesse",
   "version": "1.0.0",
   "engines": {
-    "node": ">=22.5.0"
+    "node": ">=20.0.0"
   },
   "scripts": {
-    "install:all": "cd backend && npm install && cd ../frontend && npm install",
-    "dev:backend": "cd backend && npm run dev",
-    "dev:frontend": "cd frontend && npm run dev",
-    "build": "cd frontend && npm install && npm run build",
-    "start": "cd backend && node --no-warnings index.js",
-    "setup": "npm run install:all && npm run build"
+    "vercel-build": "cd frontend && npm install && npm run build",
+    "start": "node --no-warnings backend/index.js",
+    "setup": "cd backend && npm install && cd ../frontend && npm install && npm run build"
   }
 }

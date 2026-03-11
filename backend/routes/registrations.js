@@ -1,108 +1,127 @@
 const express = require('express');
 const router = express.Router();
-const db = require('../db');
+const { db, toObj, toRows } = require('../db');
 const { requireUser } = require('./users');
 
-// GET /api/registrations/:eventId - liste des inscrits (admin)
-router.get('/:eventId', (req, res) => {
-  const rows = db.prepare(`
-    SELECT * FROM registrations WHERE event_id = ? ORDER BY status, registered_at
-  `).all(req.params.eventId);
-  res.json(rows);
+router.get('/:eventId', async (req, res) => {
+  try {
+    const { rows } = await db.execute({
+      sql: 'SELECT * FROM registrations WHERE event_id = ? ORDER BY status, registered_at',
+      args: [req.params.eventId]
+    });
+    res.json(toRows(rows));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
-// POST /api/registrations/:eventId - s'inscrire (utilisateur connecté)
-router.post('/:eventId', requireUser, (req, res) => {
-  const event = db.prepare('SELECT * FROM events WHERE id = ? AND is_active = 1').get(req.params.eventId);
-  if (!event) return res.status(404).json({ error: 'Événement non trouvé' });
+router.post('/:eventId', requireUser, async (req, res) => {
+  try {
+    const { rows: evts } = await db.execute({ sql: 'SELECT * FROM events WHERE id = ? AND is_active = 1', args: [req.params.eventId] });
+    const event = toObj(evts[0]);
+    if (!event) return res.status(404).json({ error: 'Événement non trouvé' });
 
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
-  if (!user) return res.status(401).json({ error: 'Compte introuvable' });
+    const { rows: usrs } = await db.execute({ sql: 'SELECT * FROM users WHERE id = ?', args: [req.user.id] });
+    const user = toObj(usrs[0]);
+    if (!user) return res.status(401).json({ error: 'Compte introuvable' });
 
-  // Vérifier si déjà inscrit (par user_id)
-  const exists = db.prepare(
-    'SELECT id FROM registrations WHERE event_id = ? AND user_id = ?'
-  ).get(req.params.eventId, req.user.id);
-  if (exists) return res.status(409).json({ error: 'Vous êtes déjà inscrit à cet événement' });
+    const { rows: ex } = await db.execute({ sql: 'SELECT id FROM registrations WHERE event_id = ? AND user_id = ?', args: [req.params.eventId, req.user.id] });
+    if (ex.length > 0) return res.status(409).json({ error: 'Vous êtes déjà inscrit à cet événement' });
 
-  // Compter les inscrits confirmés
-  const count = db.prepare("SELECT COUNT(*) as c FROM registrations WHERE event_id = ? AND status = 'registered'").get(req.params.eventId);
-  const status = count.c < event.max_participants ? 'registered' : 'waiting';
+    const { rows: cr } = await db.execute({ sql: "SELECT COUNT(*) as c FROM registrations WHERE event_id = ? AND status = 'registered'", args: [req.params.eventId] });
+    const count = Number(toObj(cr[0]).c);
+    const status = count < event.max_participants ? 'registered' : 'waiting';
 
-  const result = db.prepare(`
-    INSERT INTO registrations (event_id, user_id, first_name, last_name, age, phone, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(req.params.eventId, user.id, user.first_name, user.last_name, user.age, user.phone, status);
+    const result = await db.execute({
+      sql: 'INSERT INTO registrations (event_id, user_id, first_name, last_name, age, phone, status) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      args: [req.params.eventId, user.id, user.first_name, user.last_name, user.age, user.phone, status]
+    });
 
-  res.json({
-    id: result.lastInsertRowid,
-    status,
-    message: status === 'registered' ? 'Inscription confirmée !' : 'Ajouté en liste d\'attente'
-  });
+    res.json({ id: Number(result.lastInsertRowid), status, message: status === 'registered' ? 'Inscription confirmée !' : "Ajouté en liste d'attente" });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
-// GET /api/registrations/user/me - mes inscriptions
-router.get('/user/me', requireUser, (req, res) => {
-  const rows = db.prepare(`
-    SELECT r.*, e.title, e.event_date, e.location
-    FROM registrations r
-    JOIN events e ON r.event_id = e.id
-    WHERE r.user_id = ?
-    ORDER BY e.event_date ASC
-  `).all(req.user.id);
-  res.json(rows);
+router.get('/user/me', requireUser, async (req, res) => {
+  try {
+    const { rows } = await db.execute({
+      sql: `SELECT r.*, e.title, e.event_date, e.location
+            FROM registrations r JOIN events e ON r.event_id = e.id
+            WHERE r.user_id = ? ORDER BY e.event_date ASC`,
+      args: [req.user.id]
+    });
+    res.json(toRows(rows));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
-// POST /api/registrations/:eventId/admin - ajouter manuellement (admin)
-router.post('/:eventId/admin', (req, res) => {
-  const event = db.prepare('SELECT * FROM events WHERE id = ?').get(req.params.eventId);
-  if (!event) return res.status(404).json({ error: 'Événement non trouvé' });
+router.post('/:eventId/admin', async (req, res) => {
+  try {
+    const { rows: evts } = await db.execute({ sql: 'SELECT * FROM events WHERE id = ?', args: [req.params.eventId] });
+    const event = toObj(evts[0]);
+    if (!event) return res.status(404).json({ error: 'Événement non trouvé' });
 
-  const { first_name, last_name, age, phone, status } = req.body;
-  if (!first_name || !last_name) return res.status(400).json({ error: 'Prénom et nom requis' });
+    const { first_name, last_name, age, phone, status } = req.body;
+    if (!first_name || !last_name) return res.status(400).json({ error: 'Prénom et nom requis' });
 
-  const count = db.prepare("SELECT COUNT(*) as c FROM registrations WHERE event_id = ? AND status = 'registered'").get(req.params.eventId);
-  const finalStatus = status || (count.c < event.max_participants ? 'registered' : 'waiting');
+    const { rows: cr } = await db.execute({ sql: "SELECT COUNT(*) as c FROM registrations WHERE event_id = ? AND status = 'registered'", args: [req.params.eventId] });
+    const count = Number(toObj(cr[0]).c);
+    const finalStatus = status || (count < event.max_participants ? 'registered' : 'waiting');
 
-  const result = db.prepare(`
-    INSERT INTO registrations (event_id, first_name, last_name, age, phone, status)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(req.params.eventId, first_name, last_name, age || null, phone || null, finalStatus);
+    const result = await db.execute({
+      sql: 'INSERT INTO registrations (event_id, first_name, last_name, age, phone, status) VALUES (?, ?, ?, ?, ?, ?)',
+      args: [req.params.eventId, first_name, last_name, age || null, phone || null, finalStatus]
+    });
 
-  res.json({ id: result.lastInsertRowid, status: finalStatus, message: 'Participant ajouté' });
+    res.json({ id: Number(result.lastInsertRowid), status: finalStatus, message: 'Participant ajouté' });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
-// PUT /api/registrations/:id/status - changer le statut (admin)
-router.put('/:id/status', (req, res) => {
-  const { status } = req.body;
-  if (!['registered', 'waiting'].includes(status)) return res.status(400).json({ error: 'Statut invalide' });
+router.put('/:id/status', async (req, res) => {
+  try {
+    const { status } = req.body;
+    if (!['registered', 'waiting'].includes(status)) return res.status(400).json({ error: 'Statut invalide' });
 
-  const reg = db.prepare('SELECT * FROM registrations WHERE id = ?').get(req.params.id);
-  if (!reg) return res.status(404).json({ error: 'Inscription non trouvée' });
+    const { rows } = await db.execute({ sql: 'SELECT * FROM registrations WHERE id = ?', args: [req.params.id] });
+    if (rows.length === 0) return res.status(404).json({ error: 'Inscription non trouvée' });
 
-  db.prepare('UPDATE registrations SET status = ? WHERE id = ?').run(status, req.params.id);
-  res.json({ message: 'Statut mis à jour' });
+    await db.execute({ sql: 'UPDATE registrations SET status = ? WHERE id = ?', args: [status, req.params.id] });
+    res.json({ message: 'Statut mis à jour' });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
-// DELETE /api/registrations/:id (admin)
-router.delete('/:id', (req, res) => {
-  const reg = db.prepare('SELECT * FROM registrations WHERE id = ?').get(req.params.id);
-  if (!reg) return res.status(404).json({ error: 'Inscription non trouvée' });
+router.delete('/:id', async (req, res) => {
+  try {
+    const { rows } = await db.execute({ sql: 'SELECT * FROM registrations WHERE id = ?', args: [req.params.id] });
+    const reg = toObj(rows[0]);
+    if (!reg) return res.status(404).json({ error: 'Inscription non trouvée' });
 
-  db.prepare('DELETE FROM registrations WHERE id = ?').run(req.params.id);
+    await db.execute({ sql: 'DELETE FROM registrations WHERE id = ?', args: [req.params.id] });
 
-  if (reg.status === 'registered') {
-    const event = db.prepare('SELECT * FROM events WHERE id = ?').get(reg.event_id);
-    const count = db.prepare("SELECT COUNT(*) as c FROM registrations WHERE event_id = ? AND status = 'registered'").get(reg.event_id);
-    if (count.c < event.max_participants) {
-      const next = db.prepare("SELECT id FROM registrations WHERE event_id = ? AND status = 'waiting' ORDER BY registered_at LIMIT 1").get(reg.event_id);
-      if (next) {
-        db.prepare("UPDATE registrations SET status = 'registered' WHERE id = ?").run(next.id);
+    if (reg.status === 'registered') {
+      const { rows: evts } = await db.execute({ sql: 'SELECT * FROM events WHERE id = ?', args: [reg.event_id] });
+      const event = toObj(evts[0]);
+      const { rows: cr } = await db.execute({ sql: "SELECT COUNT(*) as c FROM registrations WHERE event_id = ? AND status = 'registered'", args: [reg.event_id] });
+      const count = Number(toObj(cr[0]).c);
+
+      if (count < event.max_participants) {
+        const { rows: next } = await db.execute({ sql: "SELECT id FROM registrations WHERE event_id = ? AND status = 'waiting' ORDER BY registered_at LIMIT 1", args: [reg.event_id] });
+        if (next.length > 0) {
+          await db.execute({ sql: "UPDATE registrations SET status = 'registered' WHERE id = ?", args: [toObj(next[0]).id] });
+        }
       }
     }
-  }
 
-  res.json({ message: 'Inscription supprimée' });
+    res.json({ message: 'Inscription supprimée' });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 module.exports = router;

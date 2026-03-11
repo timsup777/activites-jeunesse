@@ -1,16 +1,14 @@
-const { DatabaseSync } = require('node:sqlite');
+const { createClient } = require('@libsql/client');
 const bcrypt = require('bcryptjs');
 const path = require('path');
 
-const dbPath = process.env.DB_PATH || path.join(__dirname, 'data.db');
-const db = new DatabaseSync(dbPath);
+const db = createClient({
+  url: process.env.TURSO_DATABASE_URL || `file:${path.join(__dirname, 'data.db')}`,
+  authToken: process.env.TURSO_AUTH_TOKEN
+});
 
-db.exec('PRAGMA journal_mode = WAL');
-db.exec('PRAGMA foreign_keys = ON');
-
-// Tables
-db.exec(`
-  CREATE TABLE IF NOT EXISTS events (
+async function initDb() {
+  await db.execute(`CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     title TEXT NOT NULL,
     theme TEXT,
@@ -22,9 +20,25 @@ db.exec(`
     max_participants INTEGER DEFAULT 20,
     created_at TEXT DEFAULT (datetime('now','localtime')),
     is_active INTEGER DEFAULT 1
-  );
+  )`);
 
-  CREATE TABLE IF NOT EXISTS registrations (
+  await db.execute(`CREATE TABLE IF NOT EXISTS admins (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL
+  )`);
+
+  await db.execute(`CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    first_name TEXT NOT NULL,
+    last_name TEXT NOT NULL,
+    age INTEGER,
+    phone TEXT,
+    pin_hash TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+  )`);
+
+  await db.execute(`CREATE TABLE IF NOT EXISTS registrations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     event_id INTEGER NOT NULL,
     first_name TEXT NOT NULL,
@@ -36,31 +50,28 @@ db.exec(`
     status TEXT DEFAULT 'registered',
     FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
-  );
+  )`);
 
-  CREATE TABLE IF NOT EXISTS admins (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT UNIQUE NOT NULL,
-    password_hash TEXT NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    first_name TEXT NOT NULL,
-    last_name TEXT NOT NULL,
-    age INTEGER,
-    phone TEXT,
-    pin_hash TEXT NOT NULL,
-    created_at TEXT DEFAULT (datetime('now','localtime'))
-  );
-`);
-
-// Default admin: admin / activites2024
-const existing = db.prepare('SELECT id FROM admins WHERE username = ?').get('admin');
-if (!existing) {
-  const hash = bcrypt.hashSync('activites2024', 10);
-  db.prepare('INSERT INTO admins (username, password_hash) VALUES (?, ?)').run('admin', hash);
-  console.log('Admin créé: admin / activites2024');
+  const { rows } = await db.execute("SELECT id FROM admins WHERE username = 'admin'");
+  if (rows.length === 0) {
+    const hash = bcrypt.hashSync('activites2024', 10);
+    await db.execute({ sql: "INSERT INTO admins (username, password_hash) VALUES ('admin', ?)", args: [hash] });
+    console.log('Admin créé: admin / activites2024');
+  }
 }
 
-module.exports = db;
+// Convertit une Row libsql en objet plain
+function toObj(row) {
+  if (!row) return null;
+  const obj = {};
+  for (const key of Object.keys(row)) {
+    if (isNaN(Number(key))) obj[key] = row[key];
+  }
+  return obj;
+}
+
+function toRows(rows) {
+  return rows.map(toObj);
+}
+
+module.exports = { db, initDb, toObj, toRows };
