@@ -1,0 +1,7 @@
+[build]
+builder = "nixpacks"
+buildCommand = "cd backend && npm install && cd ../frontend && npm install && npm run build"
+
+[deploy]
+startCommand = "node --no-warnings backend/index.js"
+restartPolicyType = "on_failure"
